@@ -695,7 +695,30 @@ if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Generic|Android)$")
   target_link_libraries(crypto Threads::Threads)
 endif()
 
-add_library(ssl ${SSL_SOURCES})
+# 1. 添加 Brotli 头文件路径
+include_directories(third_party/brotli/include)
+# 2. 定义 Brotli 源文件列表
+file(GLOB BROTLI_SOURCES
+    "third_party/brotli/common/*.c"
+    "third_party/brotli/dec/*.c"
+    "third_party/brotli/enc/*.c"
+    "third_party/brotli/tools/*.c"
+)
+
+if(MSVC)
+  # 针对 Brotli 源文件禁用特定的 MSVC 警告
+  # C4189: 局部变量已初始化但不引用 (local variable is initialized but not referenced)
+  # C4244: 转换可能丢失数据 (Brotli 中也很常见)
+  # C4267: size_t 转换丢失数据
+  foreach(src_file ${BROTLI_SOURCES})
+    set_source_files_properties(
+        ${src_file}
+        PROPERTIES COMPILE_FLAGS "/wd4189 /wd4244 /wd4267"
+    )
+  endforeach()
+endif()
+
+add_library(ssl ${SSL_SOURCES} ${BROTLI_SOURCES})
 # Although libssl also provides headers that require an include directory, the
 # flag is already specified by libcrypto, so we omit target_include_directories
 # here.

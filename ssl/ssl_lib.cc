@@ -42,6 +42,52 @@
 #include <sys/time.h>
 #endif
 
+#include <brotli/decode.h>
+#include <brotli/encode.h>
+
+// brotli 压缩算法工具 begin
+static int BrotliCompressHelper(SSL* ssl, CBB* out, const uint8_t* in, size_t in_len) {
+    size_t max_out = BrotliEncoderMaxCompressedSize(in_len);
+    uint8_t* out_ptr;
+    if (!CBB_reserve(out, &out_ptr, max_out)) {
+        return 0;
+    }
+
+    size_t encoded_size = max_out;
+    // 使用 Brotli 默认配置
+    BROTLI_BOOL result = BrotliEncoderCompress(
+        BROTLI_DEFAULT_QUALITY, BROTLI_DEFAULT_WINDOW, BROTLI_DEFAULT_MODE,
+        in_len, in, &encoded_size, out_ptr);
+
+    if (result != BROTLI_TRUE) {
+        return 0;
+    }
+    CBB_did_write(out, encoded_size);
+    return 1;
+}
+
+static int BrotliDecompressHelper(SSL* ssl, CRYPTO_BUFFER** out, size_t uncompressed_len,
+                                  const uint8_t* in, size_t in_len) {
+    // 使用 BoringSSL 的内存分配器
+    *out = CRYPTO_BUFFER_alloc(NULL, uncompressed_len);
+    if (*out == NULL) {
+        return 0;
+    }
+
+    size_t decoded_size = uncompressed_len;
+    uint8_t* out_ptr = const_cast<uint8_t*>(CRYPTO_BUFFER_data(*out));
+
+    BrotliDecoderResult result = BrotliDecoderDecompress(
+        in_len, in, &decoded_size, out_ptr);
+
+    if (result != BROTLI_DECODER_RESULT_SUCCESS || decoded_size != uncompressed_len) {
+        CRYPTO_BUFFER_free(*out);
+        *out = NULL;
+        return 0;
+    }
+    return 1;
+}
+// end
 
 BSSL_NAMESPACE_BEGIN
 
@@ -459,6 +505,14 @@ SSL_CTX *SSL_CTX_new(const SSL_METHOD *method) {
   }
   if (!ret->supported_group_list_flags.Init(ret->supported_group_list.size())) {
     return nullptr;
+  }
+
+  // 注册 Brotli 证书压缩 (RFC 8879 code 0x0002)
+  if (!SSL_CTX_add_cert_compression_alg(ret.get(), 0x0002,
+                                        BrotliCompressHelper,
+                                        BrotliDecompressHelper)) {
+      OPENSSL_PUT_ERROR(SSL, ERR_R_MALLOC_FAILURE);
+      return nullptr;
   }
 
   return ret.release();
