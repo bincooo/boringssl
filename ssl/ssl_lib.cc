@@ -45,6 +45,10 @@
 #include <brotli/decode.h>
 #include <brotli/encode.h>
 
+#ifndef TLS_cert_compress_brotli
+#define TLS_cert_compress_brotli 0x0002
+#endif
+
 // brotli 压缩算法工具 begin
 static int BrotliCompressHelper(SSL* ssl, CBB* out, const uint8_t* in, size_t in_len) {
     size_t max_out = BrotliEncoderMaxCompressedSize(in_len);
@@ -68,14 +72,13 @@ static int BrotliCompressHelper(SSL* ssl, CBB* out, const uint8_t* in, size_t in
 
 static int BrotliDecompressHelper(SSL* ssl, CRYPTO_BUFFER** out, size_t uncompressed_len,
                                   const uint8_t* in, size_t in_len) {
-    // 使用 BoringSSL 的内存分配器
-    *out = CRYPTO_BUFFER_alloc(NULL, uncompressed_len);
+    uint8_t* out_ptr;
+    *out = CRYPTO_BUFFER_alloc(&out_ptr, uncompressed_len);
     if (*out == NULL) {
         return 0;
     }
 
     size_t decoded_size = uncompressed_len;
-    uint8_t* out_ptr = const_cast<uint8_t*>(CRYPTO_BUFFER_data(*out));
 
     BrotliDecoderResult result = BrotliDecoderDecompress(
         in_len, in, &decoded_size, out_ptr);
@@ -508,12 +511,30 @@ SSL_CTX *SSL_CTX_new(const SSL_METHOD *method) {
   }
 
   // 注册 Brotli 证书压缩 (RFC 8879 code 0x0002)
-  if (!SSL_CTX_add_cert_compression_alg(ret.get(), 0x0002,
-                                        BrotliCompressHelper,
-                                        BrotliDecompressHelper)) {
+  if (!SSL_CTX_add_cert_compression_alg(ret.get(), TLS_cert_compress_brotli,
+        BrotliCompressHelper, BrotliDecompressHelper)) {
       OPENSSL_PUT_ERROR(SSL, ERR_R_MALLOC_FAILURE);
       return nullptr;
   }
+
+  // 移除签名算法 SHA-1
+  static const uint16_t kModernSignAlgorithms[] = {
+      SSL_SIGN_ECDSA_SECP256R1_SHA256,
+      SSL_SIGN_RSA_PSS_RSAE_SHA256,
+      SSL_SIGN_RSA_PKCS1_SHA256,
+      SSL_SIGN_ECDSA_SECP384R1_SHA384,
+      SSL_SIGN_RSA_PSS_RSAE_SHA384,
+      SSL_SIGN_RSA_PKCS1_SHA384,
+      SSL_SIGN_RSA_PSS_RSAE_SHA512,
+      SSL_SIGN_RSA_PKCS1_SHA512,
+  };
+  if (!SSL_CTX_set_verify_algorithm_prefs(ret.get(), kModernSignAlgorithms,
+        sizeof(kModernSignAlgorithms) / sizeof(kModernSignAlgorithms[0]))) {
+      return nullptr;
+  }
+
+  // 开启扩展顺序随机化 (Permute Extensions)
+  SSL_CTX_set_permute_extensions(ret.get(), 1);
 
   return ret.release();
 }
